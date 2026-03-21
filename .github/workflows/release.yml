@@ -14,7 +14,7 @@ jobs:
     name: Build & Push to GHCR
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
 
     steps:
