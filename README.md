@@ -30,7 +30,7 @@ services:
     # ...
 
   qport:
-    image: ghcr.io/yourusername/qport:latest
+    image: ghcr.io/jph-sw/qport:latest
     environment:
       PORT_FILE: /gluetun/forwarded_port
       QB_URL: http://qbittorrent:8080
@@ -49,22 +49,13 @@ volumes:
 
 ## Environment variables
 
-| Variable    | Default                        | Description                              |
-|-------------|--------------------------------|------------------------------------------|
-| `PORT_FILE` | `/gluetun/forwarded_port`      | Path to the file containing the port number |
-| `QB_URL`    | `http://localhost:8080`        | qBittorrent Web UI base URL              |
-| `QB_USER`   | `admin`                        | qBittorrent username                     |
-| `QB_PASS`   | `adminadmin`                   | qBittorrent password                     |
-| `RUST_LOG`  | `info`                         | Log level (`error`, `warn`, `info`, `debug`, `trace`) |
-
-## Building from source
-
-Requires Rust 1.85+.
-
-```bash
-cargo build --release
-./target/release/qport
-```
+| Variable    | Default                   | Description                                           |
+| ----------- | ------------------------- | ----------------------------------------------------- |
+| `PORT_FILE` | `/gluetun/forwarded_port` | Path to the file containing the port number           |
+| `QB_URL`    | `http://localhost:8080`   | qBittorrent Web UI base URL                           |
+| `QB_USER`   | `admin`                   | qBittorrent username                                  |
+| `QB_PASS`   | `adminadmin`              | qBittorrent password                                  |
+| `RUST_LOG`  | `info`                    | Log level (`error`, `warn`, `info`, `debug`, `trace`) |
 
 ## Building the Docker image
 
