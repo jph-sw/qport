@@ -1,4 +1,5 @@
 use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use reqwest::Client;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -17,6 +18,7 @@ struct Config_ {
     qb_url: String,
     qb_user: String,
     qb_pass: String,
+    qb_api_key: Option<String>,
     port_file: String,
     /// Delay between the 3 rapid attempts inside a single sync burst.
     sync_attempt_delay: Duration,
@@ -32,6 +34,7 @@ impl Config_ {
             qb_url: std::env::var("QB_URL").unwrap_or_else(|_| QB_URL_DEFAULT.to_string()),
             qb_user: std::env::var("QB_USER").unwrap_or_else(|_| QB_USER_DEFAULT.to_string()),
             qb_pass: std::env::var("QB_PASS").unwrap_or_else(|_| QB_PASS_DEFAULT.to_string()),
+            qb_api_key: std::env::var("QB_API_KEY").ok(),
             port_file: std::env::var("PORT_FILE").unwrap_or_else(|_| PORT_FILE.to_string()),
             sync_attempt_delay: Duration::from_secs(5),
             initial_retry_delay: Duration::from_secs(10),
@@ -92,7 +95,12 @@ async fn qb_set_port(client: &Client, cfg: &Config_, port: u16) -> anyhow::Resul
 /// Returns true if any attempt succeeded.
 async fn sync_port(client: &Client, cfg: &Config_, port: u16) -> bool {
     for attempt in 1..=3u32 {
-        match qb_login(client, cfg).await {
+        let auth = if cfg.qb_api_key.is_some() {
+            Ok(())
+        } else {
+            qb_login(client, cfg).await
+        };
+        match auth {
             Ok(_) => match qb_set_port(client, cfg, port).await {
                 Ok(_) => return true,
                 Err(e) => error!("Attempt {}/3 - Failed to set port: {}", attempt, e),
@@ -219,10 +227,20 @@ async fn main() -> anyhow::Result<()> {
     info!("Watching: {}", cfg.port_file);
     info!("qBittorrent: {}", cfg.qb_url);
 
-    let client = Client::builder()
+    let mut client_builder = Client::builder()
         .cookie_store(true)
-        .timeout(Duration::from_secs(10))
-        .build()?;
+        .timeout(Duration::from_secs(10));
+
+    if let Some(ref key) = cfg.qb_api_key {
+        let mut headers = HeaderMap::new();
+        let mut auth_value = HeaderValue::from_str(&format!("Bearer {}", key))?;
+        auth_value.set_sensitive(true);
+        headers.insert(AUTHORIZATION, auth_value);
+        client_builder = client_builder.default_headers(headers);
+        info!("Using API key authentication");
+    }
+
+    let client = client_builder.build()?;
 
     let (async_tx, async_rx) = tokio::sync::mpsc::unbounded_channel();
     let (sync_tx, sync_rx) = channel();
@@ -267,6 +285,75 @@ mod tests {
         Ok(Event::new(EventKind::Modify(ModifyKind::Any)).add_path(p.clone()))
     }
 
+    /// Verifies that API key auth skips the login endpoint entirely and sets the port.
+    #[tokio::test]
+    async fn test_api_key_auth_skips_login() {
+        let server = MockServer::start().await;
+
+        Mock::given(method("POST"))
+            .and(path("/api/v2/app/setPreferences"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+
+        let dir = tempdir().unwrap();
+        let port_file = dir.path().join("forwarded_port");
+        std::fs::write(&port_file, "12345").unwrap();
+
+        let cfg = Config_ {
+            qb_url: server.uri(),
+            qb_user: "admin".to_string(),
+            qb_pass: "adminadmin".to_string(),
+            qb_api_key: Some("qbt_testkey1234567890123456789012".to_string()),
+            port_file: port_file.to_str().unwrap().to_string(),
+            sync_attempt_delay: Duration::from_millis(10),
+            initial_retry_delay: Duration::from_millis(100),
+            max_retry_delay: Duration::from_secs(1),
+        };
+
+        let mut headers = HeaderMap::new();
+        let mut auth_value =
+            HeaderValue::from_str("Bearer qbt_testkey1234567890123456789012").unwrap();
+        auth_value.set_sensitive(true);
+        headers.insert(AUTHORIZATION, auth_value);
+
+        let client = Client::builder()
+            .cookie_store(true)
+            .default_headers(headers)
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap();
+
+        let (tx, rx) = unbounded_channel();
+        tx.send(modify_event(&port_file)).unwrap();
+
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            run_sync_loop(&cfg, &client, None, rx),
+        )
+        .await
+        .ok();
+
+        let requests = server
+            .received_requests()
+            .await
+            .expect("request recording should be enabled");
+
+        assert!(
+            requests
+                .iter()
+                .all(|r| r.url.path() != "/api/v2/auth/login"),
+            "login endpoint should not be called when using API key auth"
+        );
+        assert!(
+            requests
+                .iter()
+                .any(|r| r.url.path() == "/api/v2/app/setPreferences"
+                    && String::from_utf8_lossy(&r.body).contains("12345")),
+            "setPreferences was not called with port 12345"
+        );
+    }
+
     /// Simulates the bug scenario:
     ///   1. File is written with port 43897
     ///   2. All 3 immediate sync attempts fail (qBittorrent not yet reachable)
@@ -305,6 +392,7 @@ mod tests {
             qb_url: server.uri(),
             qb_user: "admin".to_string(),
             qb_pass: "adminadmin".to_string(),
+            qb_api_key: None,
             port_file: port_file.to_str().unwrap().to_string(),
             sync_attempt_delay: Duration::from_millis(10),
             initial_retry_delay: Duration::from_millis(100),
