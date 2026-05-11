@@ -62,15 +62,16 @@ async fn qb_login(client: &Client, cfg: &Config_) -> anyhow::Result<()> {
     params.insert("password", cfg.qb_pass.as_str());
 
     let resp = client.post(&url).form(&params).send().await?;
+    let status = resp.status();
     let body = resp.text().await?;
 
-    if body.trim() == "Ok." {
+    if body.trim() == "Fails." {
+        anyhow::bail!("qBittorrent login failed: bad credentials")
+    } else if body.trim() == "Ok." || (status.is_success() && body.trim().is_empty()) {
         info!("Logged in to qBittorrent");
         Ok(())
-    } else if body.trim() == "Fails." {
-        anyhow::bail!("qBittorrent login failed: bad credentials")
     } else {
-        anyhow::bail!("qBittorrent login unexpected response: {}", body)
+        anyhow::bail!("qBittorrent login unexpected response ({}): {}", status, body)
     }
 }
 
